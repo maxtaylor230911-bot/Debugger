@@ -7,6 +7,9 @@ import { BackupStore, undoLastSession } from "./backup.js";
 import { Workspace } from "./tools.js";
 import { TerminalUI, color } from "./ui.js";
 import { debugWithClaudeCode, ClaudeCodeError } from "./claude-code.js";
+import pkg from "../package.json" with { type: "json" };
+
+export { reportApiError, printSummary };
 
 const HELP = `debugger — find and fix bugs with Claude
 
@@ -51,7 +54,6 @@ function positiveInt(value, name) {
 }
 
 async function version() {
-  const pkg = JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8"));
   return pkg.version;
 }
 
@@ -227,6 +229,8 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (reportApiError(ui, err)) return 1;
     throw err;
+  } finally {
+    ui.close();
   }
 }
 

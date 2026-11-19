@@ -4,3 +4,4 @@ out/
 .0/
 .env
 *.log
+dist/

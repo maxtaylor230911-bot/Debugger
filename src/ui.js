@@ -14,11 +14,12 @@ export const color = {
 
 /** Terminal UI. `autoApprove` answers yes to every prompt (--yes). */
 export class TerminalUI {
-  constructor({ autoApprove = false, verbose = false, out = process.stdout, input = process.stdin } = {}) {
+  constructor({ autoApprove = false, verbose = false, out = process.stdout, input = process.stdin, interactive } = {}) {
     this.autoApprove = autoApprove;
     this.verbose = verbose;
     this.out = out;
     this.input = input;
+    this.interactive = interactive ?? Boolean(input.isTTY);
     this.midLine = false;
   }
 
@@ -62,19 +63,74 @@ export class TerminalUI {
    */
   async confirm(question) {
     if (this.autoApprove) return { approved: true };
-    if (!this.input.isTTY) {
+    if (!this.interactive) {
       this.warn(`${question} — declined (no terminal; pass --yes to allow)`);
       return { approved: false, feedback: "Declined automatically: not running in an interactive terminal." };
     }
-    const rl = readline.createInterface({ input: this.input, output: this.out });
-    try {
-      if (this.midLine) this.write("\n");
-      const answer = (await rl.question(color.bold(`${question} [y/N, or type why not] `))).trim();
-      this.midLine = false;
-      if (/^(y|yes)$/i.test(answer)) return { approved: true };
-      return { approved: false, feedback: answer && !/^(n|no)$/i.test(answer) ? answer : undefined };
-    } finally {
-      rl.close();
+    const answer = ((await this.ask(`${question} [y/N, or type why not] `)) ?? "").trim();
+    if (/^(y|yes)$/i.test(answer)) return { approved: true };
+    return { approved: false, feedback: answer && !/^(n|no)$/i.test(answer) ? answer : undefined };
+  }
+
+  // One shared line reader for every question, so menus, pasted blocks and
+  // confirmations never compete for stdin. Lines that arrive before they're
+  // asked for (a fast paste, piped input) are queued, not lost.
+  #rl = null;
+  #queue = [];
+  #waiters = [];
+  #closed = false;
+
+  #reader() {
+    if (this.#rl) return;
+    const terminal = Boolean(this.input.isTTY);
+    this.#rl = readline.createInterface({ input: this.input, output: terminal ? this.out : undefined, terminal });
+    this.#rl.on("line", (line) => {
+      const waiter = this.#waiters.shift();
+      if (waiter) waiter(line);
+      else this.#queue.push(line);
+    });
+    this.#rl.on("close", () => {
+      this.#closed = true;
+      for (const waiter of this.#waiters.splice(0)) waiter(null);
+    });
+    // In raw mode Ctrl+C reaches readline, not the process: pass it on.
+    this.#rl.on("SIGINT", () => {
+      if (process.listenerCount("SIGINT") > 0) process.emit("SIGINT");
+      else {
+        this.write("\n");
+        process.exit(130);
+      }
+    });
+  }
+
+  /** Next line of input, or null once input has ended. */
+  nextLine() {
+    this.#reader();
+    if (this.#queue.length) return Promise.resolve(this.#queue.shift());
+    if (this.#closed) return Promise.resolve(null);
+    return new Promise((resolve) => this.#waiters.push(resolve));
+  }
+
+  /** Show a prompt and read one line (null if input ended). */
+  async ask(question) {
+    if (this.midLine) this.write("\n");
+    this.write(color.bold(question));
+    this.midLine = false;
+    return this.nextLine();
+  }
+
+  /** Read lines until one equals `endToken` (or input ends). No length limit. */
+  async readBlock(endToken = "END") {
+    const lines = [];
+    for (;;) {
+      const line = await this.nextLine();
+      if (line === null || line.trim() === endToken) break;
+      lines.push(line);
     }
+    return lines.join("\n");
+  }
+
+  close() {
+    this.#rl?.close();
   }
 }

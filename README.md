@@ -68,6 +68,28 @@ That runs `debugger fix "node --test examples/buggy-calc"`. The example has thre
 (an off-by-one, an alphabetical sort of numbers, and an input that gets modified). Afterwards,
 `debugger undo` puts the bugs back so you can try again.
 
+## Debugger.exe (Windows, double-click)
+
+`npm run build:exe` builds a standalone `Debugger.exe` (it bundles Node.js, so nothing else needs
+installing apart from Claude Code) and copies it to your Downloads folder. Double-click it to get
+a menu:
+
+1. **Inspect a file.** Drag the file into the window, or type its path.
+2. **Paste code into the window.** Finish with a line that says `END`.
+3. **Paste code into Notepad.** Best for very large code, because nothing is cut off.
+4. **Fix a failing command in a project folder.** The same as `debugger fix`.
+
+For options 1–3 you choose **find and fix bugs** or **review only**, and can say what's wrong (or
+leave it blank for a full bug review). Claude works on a **copy** of your code, reading large
+files all the way through in chunks, so there is no size limit on Debugger's side. Afterwards:
+
+- The report is saved to `Downloads\Debugger reports\`.
+- You can ask follow-up questions in the same conversation.
+- If Claude fixed anything, you see the changes and choose how to save them: as a new file
+  (`name.fixed.ext`), over the original (which is kept as `name.ext.bak`), or not at all.
+
+Run from a terminal with arguments, `Debugger.exe fix "npm test"` works like the `debugger` command.
+
 ## Commands
 
 | Command | What it does |

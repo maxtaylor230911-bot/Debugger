@@ -50,6 +50,29 @@ export function allowRules(command, extraAllowed = []) {
   return rules;
 }
 
+/**
+ * Arguments for a locked-down headless Claude Code run: restricted mode
+ * (confined to the working folder, user settings ignored), safe mode (no
+ * plugins, hooks or CLAUDE.md), only the listed tools, and nothing that
+ * would need a permission prompt.
+ */
+export function claudeArgs({ tools, settingsPath, promptPath, permissionMode, model, effort }) {
+  return [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--restricted",
+    "--safe-mode",
+    "--tools", tools,
+    "--settings", settingsPath,
+    "--append-system-prompt-file", promptPath,
+    "--permission-mode", permissionMode,
+    "--permission-prompts", "none",
+    ...(model ? ["--model", model] : []),
+    ...(effort ? ["--effort", effort] : []),
+  ];
+}
+
 function quoteForCmd(arg) {
   return /^[\w.,:\\/=@+-]+$/.test(arg) ? arg : `"${arg.replace(/"/g, '\\"')}"`;
 }
@@ -198,21 +221,14 @@ export async function debugWithClaudeCode({
   await fs.writeFile(settingsPath, JSON.stringify({ permissions: { allow: allowRules(command, allowedCommands) } }));
   await fs.writeFile(promptPath, SYSTEM_PROMPT + CLAUDE_CODE_NOTES);
 
-  const tools = mode === "fix" ? "Read,Edit,Write,Glob,Grep,Bash,PowerShell" : "Read,Glob,Grep,Bash,PowerShell";
-  const baseArgs = [
-    "-p",
-    "--output-format", "stream-json",
-    "--verbose",
-    "--restricted",
-    "--safe-mode",
-    "--tools", tools,
-    "--settings", settingsPath,
-    "--append-system-prompt-file", promptPath,
-    "--permission-mode", mode === "fix" ? "acceptEdits" : "plan",
-    "--permission-prompts", "none",
-    ...(model ? ["--model", model] : []),
-    ...(effort ? ["--effort", effort] : []),
-  ];
+  const baseArgs = claudeArgs({
+    tools: mode === "fix" ? "Read,Edit,Write,Glob,Grep,Bash,PowerShell" : "Read,Glob,Grep,Bash,PowerShell",
+    settingsPath,
+    promptPath,
+    permissionMode: mode === "fix" ? "acceptEdits" : "plan",
+    model,
+    effort,
+  });
 
   const abort = new AbortController();
   const onSigint = () => {
