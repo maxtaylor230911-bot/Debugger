@@ -1,68 +1,143 @@
 # Debugger
 
-Automated AI security reviews for this repository, powered by
-[0security](https://github.com/0sec-labs/0security), an open-source harness for AI
-security agents.
+Point it at a failing command. Claude reads the error, finds the root cause in your code,
+fixes it (you approve every change), and then **re-runs the command to prove the fix works**.
 
-On every pull request (and on demand), a GitHub Actions workflow runs 0security
-against the code, saves its findings, and posts a report to the run's summary page.
+```
+debugger fix "npm test"
+```
 
-## What's in here
+What a session looks like (illustrative, abridged):
 
-| Path | What it is |
+```
+▸ Running: npm test
+It fails. Handing it to Claude...
+
+  → read_file src/stats.js
+  → search /median/ in *.js
+▸ Proposed edit to src/stats.js
+-   const sorted = numbers.sort();
++   const sorted = [...numbers].sort((a, b) => a - b);
+Apply this edit to src/stats.js? [y/N, or type why not] y
+...
+▸ Re-running to verify: npm test
+✔ Fixed. "npm test" now passes.
+Changed: src/stats.js
+Undo all of these changes with: debugger undo
+```
+
+It works with any language: anything you can run from a terminal (`pytest`, `cargo test`,
+`python app.py`, `go build ./...`) can be debugged.
+
+## Setup
+
+You need [Node.js](https://nodejs.org) 22 or newer and an Anthropic API key from
+[console.anthropic.com](https://console.anthropic.com/).
+
+```bash
+git clone https://github.com/maxtaylor230911-bot/Debugger.git
+cd Debugger
+npm install
+npm link            # makes the `debugger` command available everywhere
+```
+
+Set your key (PowerShell shown; on macOS/Linux use `export ANTHROPIC_API_KEY=...`):
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+### Try it on the included buggy example
+
+```bash
+npm run demo
+```
+
+That runs `debugger fix "node --test examples/buggy-calc"`. The example has three real bugs
+(an off-by-one, an alphabetical sort of numbers, and an input that gets modified). Afterwards,
+`debugger undo` puts the bugs back so you can try again.
+
+## Commands
+
+| Command | What it does |
 | --- | --- |
-| [`.github/workflows/0security.yml`](.github/workflows/0security.yml) | The scan workflow (runs the pinned `ghcr.io/0sec-labs/0security` Docker image) |
-| [`.0security/scan-prompt.md`](.0security/scan-prompt.md) | The instructions given to the security agent. Edit it to change what it looks for |
-| [`app/`](app/) | A small **intentionally vulnerable** Node.js demo app, so the first scan has something to find. Replace it with your own code |
+| `debugger fix "<command>"` | Runs the command. If it fails, Claude investigates, proposes edits for your approval, and the command is re-run to verify. If it still fails, Claude gets the new output and keeps going (up to 3 rounds). |
+| `debugger diagnose "<command>"` | Same investigation, but read-only: you get the root cause and a suggested diff, and no files are changed. |
+| `debugger undo` | Restores every file changed by the last `fix` session (and deletes files it created). |
 
-## Setup (one time)
+### Options
 
-1. Get an API key from [console.anthropic.com](https://console.anthropic.com/).
-2. In this repo on GitHub: **Settings → Secrets and variables → Actions → New repository secret**
-   - Name: `ANTHROPIC_API_KEY`
-   - Value: your key
-3. Go to **Actions → 0security scan → Run workflow** to try it.
+| Option | Meaning |
+| --- | --- |
+| `-p, --problem "<text>"` | Describe the bug in your own words. Use this when the command passes but the behaviour is wrong (`debugger fix "python app.py" -p "the total is off by one cent"`). |
+| `-y, --yes` | Approve every edit and command automatically. Handy in CI; review the changes afterwards. |
+| `--rounds <n>` | Maximum fix → re-run rounds (default 3). |
+| `--max-turns <n>` | Maximum Claude steps per round (default 40). |
+| `--effort <level>` | `low`, `medium`, `high` (default), `xhigh` or `max`. Higher means more thorough but slower, with more tokens. |
+| `--model <id>` | Claude model (default `claude-opus-5-5`). |
+| `--timeout <secs>` | Kill the command if it runs longer than this (default 120). |
+| `--cwd <dir>` | Project folder (default: the current folder). |
+| `-v, --verbose` | Also show summaries of Claude's reasoning. |
 
-Without the secret, the workflow still runs but skips the scan and says why.
+## How it works
 
-Want a different AI provider? 0security supports OpenAI, OpenRouter, DeepSeek and others.
-Swap `ANTHROPIC_API_KEY` in the workflow for that provider's variable (see the
-[models docs](https://docs.0.security/models/)).
+1. **Reproduce.** Debugger runs your command and captures the exit code and output.
+2. **Investigate.** Claude (Opus 5.5 with adaptive thinking) gets the failure and a small set of
+   tools: `list_files`, `read_file`, `search`, `run_command`, `edit_file` and `write_file`. It
+   reads the stack trace, opens the code, follows the data back to the root cause, and can re-run
+   narrower commands (one test, one input) to check its ideas.
+3. **Fix, with your approval.** Every edit is shown as a diff and needs your **y**. Answer with a
+   reason instead ("don't touch the tests") and Claude adapts. Any command other than the one
+   you're debugging also needs approval.
+4. **Verify.** Debugger re-runs your command itself. It doesn't take Claude's word for it. If the
+   command still fails, the new output goes back to Claude for another round.
+5. **Report.** Claude ends with the root cause, what changed, and what was verified.
 
-## Reading results
+### Safety
 
-Open a workflow run. The **Summary** tab shows the agent's review and its findings list.
-The full output is also attached as the `0security-report` artifact.
+- Claude can only read and write files **inside the project folder**, and never inside `.git/`.
+- The original of every file is saved in `.debugger/` before it's changed, so `debugger undo` can
+  roll back a whole session.
+- Without a terminal (for example in a script) and without `--yes`, every change is declined.
+- Commands run with no input (stdin is closed) and are killed after the timeout.
+- File contents and command output are treated as data, not instructions.
+- Claude is told never to "fix" a failure by weakening or deleting tests or hiding errors.
 
-A finished scan passes even when it finds problems, so read the report, not just the
-green tick.
+### Cost
 
-## Running it on your own computer
+Each request is billed to your Anthropic API key. Prompt caching is on, so repeated context in a
+session is much cheaper. A token summary is printed at the end of every run. Use
+`--effort medium` for quicker, cheaper runs on simple bugs.
+
+## Development
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0sec-labs/0security/main/install.sh | bash
-export ANTHROPIC_API_KEY="your-key"
-0 -p "$(cat .0security/scan-prompt.md)"
-0 findings list
+npm test
 ```
 
-On Windows, download `0-windows-x64.exe` from the
-[0security releases](https://github.com/0sec-labs/0security/releases/latest), or use Docker:
+The test suite needs no API key. It uses a scripted fake Claude, plus one test that drives the
+real Anthropic SDK against a local mock server. CI runs it on Linux and Windows
+([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
-```bash
-docker run --rm -e ANTHROPIC_API_KEY -v "$PWD:/work:ro" -w /work \
-  ghcr.io/0sec-labs/0security:v0.39.0 -p "Review this folder for security problems"
-```
+| Path | What's in it |
+| --- | --- |
+| `src/cli.js`, `src/main.js` | Command-line parsing and the summary output |
+| `src/agent.js` | The investigate → fix → verify loop and the Claude API calls |
+| `src/tools.js` | The tools Claude uses, with path confinement, approvals and diffs |
+| `src/runner.js` | Runs commands with a timeout and captures output |
+| `src/backup.js` | Backups and `debugger undo` |
+| `examples/buggy-calc/` | A small buggy project to try it on |
+| `test/` | Tests |
 
-## Safety notes
+## Security scanning with 0security
 
-- The code is mounted **read-only** and the workflow token is limited to `contents: read`.
-- Pull requests from forks don't get repository secrets, so the scan is skipped for them.
-- `app/` is deliberately insecure. **Do not deploy it.**
-- Only point 0security at systems you own or are authorized to test.
-- Usage telemetry is turned off in CI (`ZERO_ANALYTICS_LEVEL=off`).
+This repo also runs [0security](https://github.com/0sec-labs/0security), an open-source AI
+security agent, on every pull request ([`.github/workflows/0security.yml`](.github/workflows/0security.yml)),
+using the instructions in [`.0security/scan-prompt.md`](.0security/scan-prompt.md). To turn it on,
+add an `ANTHROPIC_API_KEY` repository secret under **Settings → Secrets and variables → Actions**.
+Without it, the scan is skipped with a notice. The `app/` folder is a deliberately vulnerable demo
+for that scan. **Don't deploy it.**
 
 ## License
 
-This repository is MIT licensed. 0security itself is MIT OR Apache-2.0 and is used here
-unmodified, as a Docker image.
+MIT. 0security is MIT OR Apache-2.0 and is used unmodified, as a Docker image.

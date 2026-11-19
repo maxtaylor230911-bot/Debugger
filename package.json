@@ -1,0 +1,24 @@
+{
+  "name": "debugger-cli",
+  "version": "0.1.0",
+  "description": "Point it at a failing command; Claude finds the root cause, fixes the code with your approval, and re-runs the command to prove it.",
+  "type": "module",
+  "bin": {
+    "debugger": "src/cli.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "demo": "node src/cli.js fix \"node --test examples/buggy-calc\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0",
+    "zod": "^4.6.7"
+  },
+  "license": "MIT"
+}

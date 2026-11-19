@@ -1,5 +1,6 @@
 node_modules/
 out/
+.debugger/
 .0/
 .env
 *.log
