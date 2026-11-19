@@ -20,18 +20,34 @@ export class BackupStore {
   async save(absPath) {
     const rel = path.relative(this.root, absPath);
     if (this.saved.has(rel)) return;
-    let existed = true;
+    let original = null;
     try {
-      const data = await fs.readFile(absPath);
-      const copy = path.join(this.dir, "files", rel);
-      await fs.mkdir(path.dirname(copy), { recursive: true });
-      await fs.writeFile(copy, data);
+      original = await fs.readFile(absPath);
     } catch (err) {
       if (err.code !== "ENOENT") throw err;
-      existed = false;
+    }
+    await this.record(rel, original);
+  }
+
+  /** Store a file's original content (null: it didn't exist) for a change already made. */
+  async record(rel, original) {
+    rel = path.normalize(rel);
+    if (this.saved.has(rel)) return;
+    if (original !== null) {
+      const copy = path.join(this.dir, "files", rel);
+      await fs.mkdir(path.dirname(copy), { recursive: true });
+      await fs.writeFile(copy, original);
     }
     this.saved.add(rel);
-    this.manifest.files.push({ path: rel, existed });
+    this.manifest.files.push({ path: rel, existed: original !== null });
+    await this.#writeManifest();
+  }
+
+  /** Revert everything recorded in this session. */
+  async restore() {
+    if (this.manifest.files.length === 0) return;
+    await restoreFiles(this.root, this.dir, this.manifest.files);
+    this.manifest.undone = true;
     await this.#writeManifest();
   }
 
@@ -42,6 +58,18 @@ export class BackupStore {
   async #writeManifest() {
     await fs.mkdir(this.dir, { recursive: true });
     await fs.writeFile(path.join(this.dir, "manifest.json"), JSON.stringify(this.manifest, null, 2));
+  }
+}
+
+async function restoreFiles(root, sessionDir, files) {
+  for (const file of files) {
+    const target = path.join(root, file.path);
+    if (file.existed) {
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.copyFile(path.join(sessionDir, "files", file.path), target);
+    } else {
+      await fs.rm(target, { force: true });
+    }
   }
 }
 
@@ -64,15 +92,7 @@ export async function undoLastSession(root) {
     }
     if (manifest.undone || manifest.files.length === 0) continue;
 
-    for (const file of manifest.files) {
-      const target = path.join(root, file.path);
-      if (file.existed) {
-        await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.copyFile(path.join(sessionsDir, id, "files", file.path), target);
-      } else {
-        await fs.rm(target, { force: true });
-      }
-    }
+    await restoreFiles(root, path.join(sessionsDir, id), manifest.files);
     manifest.undone = true;
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
     return manifest;

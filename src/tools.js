@@ -8,7 +8,7 @@ import { STATE_DIR } from "./backup.js";
 /** Error whose message is returned to Claude as an is_error tool result. */
 export class ToolError extends Error {}
 
-const IGNORED_DIRS = new Set([
+export const IGNORED_DIRS = new Set([
   ".git", STATE_DIR, "node_modules", "dist", "build", "out", ".next", "coverage",
   "__pycache__", ".venv", "venv", "target", ".gradle", ".idea", ".pytest_cache", ".mypy_cache",
 ]);
@@ -72,11 +72,12 @@ export class Workspace {
     return ws;
   }
 
-  constructor({ root, ui, backups, targetCommand = "", commandTimeoutMs = 120_000 }) {
+  constructor({ root, ui, backups, targetCommand = "", allowedCommands = [], commandTimeoutMs = 120_000 }) {
     this.root = path.resolve(root);
     this.ui = ui;
     this.backups = backups;
     this.targetCommand = targetCommand.trim();
+    this.allowedCommands = [this.targetCommand, ...allowedCommands.map((c) => c.trim())].filter(Boolean);
     this.commandTimeoutMs = commandTimeoutMs;
     this.changed = new Set();
   }
@@ -272,7 +273,9 @@ export class Workspace {
   }
 
   async runCommand({ command, timeout_seconds }) {
-    if (command.trim() !== this.targetCommand) {
+    const cmd = command.trim();
+    const preApproved = this.allowedCommands.some((allowed) => cmd === allowed || cmd.startsWith(`${allowed} `));
+    if (!preApproved) {
       const { approved, feedback } = await this.ui.confirm(`Allow Claude to run: ${command}`);
       if (!approved) {
         return `The user did not allow this command.${feedback ? ` Their reason: ${feedback}` : ""}`;

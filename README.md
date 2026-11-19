@@ -31,8 +31,13 @@ It works with any language: anything you can run from a terminal (`pytest`, `car
 
 ## Setup
 
-You need [Node.js](https://nodejs.org) 22 or newer and an Anthropic API key from
-[console.anthropic.com](https://console.anthropic.com/).
+You need [Node.js](https://nodejs.org) 22 or newer, and **one** of these:
+
+- **A Claude subscription (Pro, Max, Team) with [Claude Code](https://claude.com/claude-code)
+  installed and signed in.** Debugger runs Claude through Claude Code, so it uses your plan's
+  usage. You don't need an API key.
+- **An Anthropic API key** from [console.anthropic.com](https://console.anthropic.com/), billed
+  per use. Set it as `ANTHROPIC_API_KEY`.
 
 ```bash
 git clone https://github.com/maxtaylor230911-bot/Debugger.git
@@ -41,11 +46,17 @@ npm install
 npm link            # makes the `debugger` command available everywhere
 ```
 
-Set your key (PowerShell shown; on macOS/Linux use `export ANTHROPIC_API_KEY=...`):
+Debugger picks automatically: the API when `ANTHROPIC_API_KEY` is set, otherwise Claude Code.
+To choose one yourself, pass `--backend claude-code` or `--backend api`.
 
-```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
-```
+### The two backends
+
+| | Claude Code (subscription) | API key |
+| --- | --- | --- |
+| Billing | Your Claude plan's usage limits | Pay per token |
+| Approving changes | Claude Code makes its edits, then you review all of them at the end and keep or revert them | You approve each edit as it's proposed |
+| Commands Claude may run | Only the command you're debugging (plus `--allow`), with everything else blocked | Anything, with your approval |
+| Isolation | Runs in Claude Code's restricted mode, confined to the project folder, with your Claude Code plugins, hooks and settings switched off | Debugger's own tools, confined to the project folder |
 
 ### Try it on the included buggy example
 
@@ -71,6 +82,8 @@ That runs `debugger fix "node --test examples/buggy-calc"`. The example has thre
 | --- | --- |
 | `-p, --problem "<text>"` | Describe the bug in your own words. Use this when the command passes but the behaviour is wrong (`debugger fix "python app.py" -p "the total is off by one cent"`). |
 | `-y, --yes` | Approve every edit and command automatically. Handy in CI; review the changes afterwards. |
+| `--allow "<command>"` | Also let Claude run this command, e.g. `--allow "npm run lint"`. You can repeat it. |
+| `--backend <name>` | `claude-code` (your subscription) or `api` (an API key). |
 | `--rounds <n>` | Maximum fix → re-run rounds (default 3). |
 | `--max-turns <n>` | Maximum Claude steps per round (default 40). |
 | `--effort <level>` | `low`, `medium`, `high` (default), `xhigh` or `max`. Higher means more thorough but slower, with more tokens. |
@@ -105,9 +118,9 @@ That runs `debugger fix "node --test examples/buggy-calc"`. The example has thre
 
 ### Cost
 
-Each request is billed to your Anthropic API key. Prompt caching is on, so repeated context in a
-session is much cheaper. A token summary is printed at the end of every run. Use
-`--effort medium` for quicker, cheaper runs on simple bugs.
+With Claude Code, runs count toward your subscription's usage limits. With an API key, each request
+is billed per token, and prompt caching makes repeated context much cheaper. Either way, a token
+summary is printed at the end. Use `--effort medium` for quicker, lighter runs on simple bugs.
 
 ## Development
 
@@ -123,6 +136,7 @@ real Anthropic SDK against a local mock server. CI runs it on Linux and Windows
 | --- | --- |
 | `src/cli.js`, `src/main.js` | Command-line parsing and the summary output |
 | `src/agent.js` | The investigate → fix → verify loop and the Claude API calls |
+| `src/claude-code.js`, `src/snapshot.js` | The same loop run through Claude Code, with snapshot-based review and revert |
 | `src/tools.js` | The tools Claude uses, with path confinement, approvals and diffs |
 | `src/runner.js` | Runs commands with a timeout and captures output |
 | `src/backup.js` | Backups and `debugger undo` |

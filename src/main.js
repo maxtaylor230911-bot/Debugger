@@ -6,34 +6,39 @@ import { debugSession, DEFAULT_MODEL, DEFAULT_EFFORT } from "./agent.js";
 import { BackupStore, undoLastSession } from "./backup.js";
 import { Workspace } from "./tools.js";
 import { TerminalUI, color } from "./ui.js";
+import { debugWithClaudeCode, ClaudeCodeError } from "./claude-code.js";
 
 const HELP = `debugger — find and fix bugs with Claude
 
 Usage:
   debugger fix "<command>"        Run the command; if it fails, find the root cause,
-                                  fix it (you approve each edit), and re-run to verify.
+                                  fix it, and re-run to verify. You approve the changes.
   debugger diagnose "<command>"   Explain the root cause and suggest a fix. Changes nothing.
   debugger undo                   Restore every file changed by the last fix session.
 
 Options:
   -p, --problem <text>   Describe the bug (useful when the command passes but behaves wrongly).
-  -y, --yes              Approve every edit and command without asking.
+  -y, --yes              Approve every change and command without asking.
+      --allow <command>  Also let Claude run this command (repeatable), e.g. --allow "npm run lint".
+      --backend <name>   claude-code: use your Claude subscription through Claude Code
+                         api: use an Anthropic API key (ANTHROPIC_API_KEY)
+                         Default: api when ANTHROPIC_API_KEY is set, otherwise claude-code.
       --rounds <n>       Fix, re-run, fix again: at most n rounds (default 3).
-      --max-turns <n>    Max Claude steps per round (default 40).
+      --max-turns <n>    Max Claude steps per round, api backend (default 40).
       --effort <level>   low | medium | high | xhigh | max (default ${DEFAULT_EFFORT}).
       --model <id>       Claude model (default ${DEFAULT_MODEL}).
       --timeout <secs>   Kill the command after this many seconds (default 120).
       --cwd <dir>        Project folder (default: current folder).
-  -v, --verbose          Also show Claude's thinking summaries.
+  -v, --verbose          Also show Claude's thinking summaries (api backend).
   -h, --help             Show this help.
       --version          Show the version.
 
 Examples:
   debugger fix "npm test"
   debugger fix "python app.py" --problem "totals are off by one cent"
-  debugger diagnose "node --test examples/buggy-calc"
+  debugger diagnose "node --test examples/buggy-calc"`;
 
-Needs an Anthropic API key in ANTHROPIC_API_KEY (or an 'ant auth login' profile).`;
+const BACKENDS = new Set(["api", "claude-code"]);
 
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
@@ -78,6 +83,12 @@ function printSummary(ui, result, command) {
     case "max_tokens":
       ui.warn("Stopped: a response hit the output limit mid-step.");
       break;
+    case "reverted":
+      ui.warn("All changes were reverted, so your files are as they were.");
+      break;
+    case "interrupted":
+      ui.warn("Stopped at your request.");
+      break;
     default:
       ui.warn(`Stopped (${result.status}).`);
   }
@@ -96,7 +107,9 @@ function printSummary(ui, result, command) {
 }
 
 function reportApiError(ui, err) {
-  if (err instanceof Anthropic.AuthenticationError) {
+  if (err instanceof ClaudeCodeError) {
+    ui.error(err.message);
+  } else if (err instanceof Anthropic.AuthenticationError) {
     ui.error("Anthropic rejected the API key. Set a valid key in ANTHROPIC_API_KEY.");
   } else if (err instanceof Anthropic.PermissionDeniedError) {
     ui.error(`Your API key isn't allowed to do this: ${err.message}`);
@@ -109,7 +122,7 @@ function reportApiError(ui, err) {
   } else if (err instanceof Anthropic.APIError) {
     ui.error(`Anthropic API error${err.status ? ` ${err.status}` : ""}: ${err.message}`);
   } else if (err instanceof Anthropic.AnthropicError) {
-    ui.error(`${err.message}\nSet your key first, e.g. in PowerShell: $env:ANTHROPIC_API_KEY = "sk-ant-..."`);
+    ui.error(`${err.message}\nSet ANTHROPIC_API_KEY, or use your Claude subscription with --backend claude-code.`);
   } else {
     return false;
   }
@@ -125,6 +138,8 @@ export async function main(argv = process.argv.slice(2)) {
       options: {
         problem: { type: "string", short: "p" },
         yes: { type: "boolean", short: "y" },
+        allow: { type: "string", multiple: true },
+        backend: { type: "string" },
         rounds: { type: "string" },
         "max-turns": { type: "string" },
         effort: { type: "string" },
@@ -170,18 +185,12 @@ export async function main(argv = process.argv.slice(2)) {
     const stat = await fs.stat(root).catch(() => null);
     if (!stat?.isDirectory()) throw new UsageError(`Folder not found: ${root}`);
 
-    const commandTimeoutMs = (opts.timeout ? positiveInt(opts.timeout, "timeout") : 120) * 1000;
-    const workspace = await Workspace.create({
-      root,
-      ui,
-      backups: new BackupStore(root, { command }),
-      targetCommand: command,
-      commandTimeoutMs,
-    });
+    const backend = opts.backend ?? (process.env.ANTHROPIC_API_KEY ? "api" : "claude-code");
+    if (!BACKENDS.has(backend)) throw new UsageError(`--backend must be one of: ${[...BACKENDS].join(", ")}.`);
 
-    const result = await debugSession({
-      client: new Anthropic(),
-      workspace,
+    const commandTimeoutMs = (opts.timeout ? positiveInt(opts.timeout, "timeout") : 120) * 1000;
+    const backups = new BackupStore(root, { command });
+    const common = {
       ui,
       command,
       problem: opts.problem,
@@ -189,9 +198,26 @@ export async function main(argv = process.argv.slice(2)) {
       model: opts.model ?? DEFAULT_MODEL,
       effort,
       maxRounds: opts.rounds ? positiveInt(opts.rounds, "rounds") : 3,
-      maxTurns: opts["max-turns"] ? positiveInt(opts["max-turns"], "max-turns") : 40,
       commandTimeoutMs,
-    });
+    };
+    if (backend === "claude-code") ui.info(color.dim("Using Claude Code (your Claude subscription)."));
+
+    const result =
+      backend === "claude-code"
+        ? await debugWithClaudeCode({ ...common, root, backups, allowedCommands: opts.allow ?? [] })
+        : await debugSession({
+            ...common,
+            client: new Anthropic(),
+            workspace: await Workspace.create({
+              root,
+              ui,
+              backups,
+              targetCommand: command,
+              allowedCommands: opts.allow ?? [],
+              commandTimeoutMs,
+            }),
+            maxTurns: opts["max-turns"] ? positiveInt(opts["max-turns"], "max-turns") : 40,
+          });
     printSummary(ui, result, command);
     return ["fixed", "already_passing", "diagnosed"].includes(result.status) ? 0 : 1;
   } catch (err) {
