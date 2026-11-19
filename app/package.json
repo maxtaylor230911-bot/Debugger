@@ -1,0 +1,11 @@
+{
+  "name": "debugger-demo-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Intentionally vulnerable demo app for the 0security scan. Do not deploy.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT"
+}

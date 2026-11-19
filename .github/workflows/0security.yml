@@ -1,0 +1,86 @@
+name: 0security scan
+
+# Runs an AI security review of this repository with 0security
+# (https://github.com/0sec-labs/0security) on every pull request,
+# and on demand from the Actions tab.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: 0security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin a release so runs are repeatable. Bump this to upgrade.
+  ZERO_IMAGE: ghcr.io/0sec-labs/0security:v0.39.0
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Explain skipped scan
+        if: env.HAS_KEY != 'true'
+        run: |
+          echo "::warning::ANTHROPIC_API_KEY secret is not set (or this is a fork PR), so the 0security scan was skipped. See README.md."
+          echo "### 0security scan skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "Add an \`ANTHROPIC_API_KEY\` repository secret to enable it." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run 0security review
+        if: env.HAS_KEY == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p out "$RUNNER_TEMP/zero-data"
+          chmod 777 out "$RUNNER_TEMP/zero-data"
+          docker pull --quiet "$ZERO_IMAGE"
+
+          # Source is mounted read-only; 0security state lives in /data.
+          docker run --rm \
+            -e ANTHROPIC_API_KEY \
+            -e ZERO_ANALYTICS_LEVEL=off \
+            -v "$PWD:/work:ro" -w /work \
+            -v "$RUNNER_TEMP/zero-data:/data" \
+            "$ZERO_IMAGE" \
+            -p "$(cat .0security/scan-prompt.md)" | tee out/review.md
+
+          # List the findings the review saved.
+          docker run --rm \
+            -e ZERO_ANALYTICS_LEVEL=off \
+            -v "$RUNNER_TEMP/zero-data:/data" \
+            "$ZERO_IMAGE" \
+            findings list | tee out/findings.txt || true
+
+      - name: Write job summary
+        if: env.HAS_KEY == 'true' && always()
+        run: |
+          {
+            echo "## 0security review"
+            echo
+            cat out/review.md 2>/dev/null || echo "_No review output._"
+            echo
+            echo "### Findings"
+            echo '```'
+            cat out/findings.txt 2>/dev/null || echo "No findings list."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: env.HAS_KEY == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 0security-report
+          path: out/
+          retention-days: 14
